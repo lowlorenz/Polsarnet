@@ -8,6 +8,8 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from segmentation_models_pytorch.utils.losses import DiceLoss
 
+from evaluation import confusion_matrix, kappa_coefficent, mean_producers_accuracy, mean_users_accuracy, overall_accuracy
+
 def prepare_oph_normalization(self):
     ts = OPH_Dataset(validation_index=self.validation_index, val=False)
     loader = DataLoader(ts, batch_size=len(ts))
@@ -47,22 +49,26 @@ class AirsarModel(nn.Module):
         y = self.Class_softmax(self.Class_conv(x))
         return y
 
-
 class Polsarnet(pl.LightningModule):
-    def __init__(self, validation_index = 0):
+    def __init__(self, validation_index = 0, learning_rate = 1e-7, weight_decay = 5e-4):
         super().__init__()
+        self.save_hyperparameters()
+        self.lr = learning_rate
+        self.weight_decay = weight_decay
 
         self.model = AirsarModel()
-        
-        self.validation_index = validation_index
         self.epoch = 0
         
-        #weights = [0.125,1,0.25,1,0.5,0.114]
         weights = [0,1,1,1,1,1]
         weighted_pixelwise_cross_entropy = cn.PixelwiseCrossEntropy(weights)
         pixelwise_cross_entropy = cn.PixelwiseCrossEntropy()
         dice = DiceLoss()
 
+        self.train_confusion_matrix = None
+        self.val_confusion_matrix = None
+
+
+        self.validation_index = validation_index
         self.z_normalize = True
         self.loss_function = weighted_pixelwise_cross_entropy
         self.visualize_every_n_epochs = 10
@@ -126,7 +132,12 @@ class Polsarnet(pl.LightningModule):
         data = transform_complex_to_real(data)
 
         prediction = self(data)
-        loss = self.loss_function(prediction, label)        
+        loss = self.loss_function(prediction, label)
+
+        if self.val_confusion_matrix == None:
+            self.val_confusion_matrix = confusion_matrix(prediction, label)
+        else:
+            self.val_confusion_matrix = self.val_confusion_matrix + confusion_matrix(prediction, label)
     
         self.log('val/loss', loss)
         return loss
@@ -143,8 +154,8 @@ class Polsarnet(pl.LightningModule):
                 prediction = torch.hstack([prediction[i] for i in range(106)])
                 predictions.append(prediction)
             classes = torch.vstack(predictions).cpu()
-            # colorize predicted classes
 
+            # colorize predicted classes
             image = torch.zeros((6630,1378,3))
             values = [[0,0,0],[0,0,1],[0,0.5,0],[0,1,0],[1,0,0],[1,1,0]]
             for i, val in enumerate(values):
@@ -161,17 +172,31 @@ class Polsarnet(pl.LightningModule):
         tensorboard = self.logger.experiment
         tensorboard.add_image("Prediction", image, global_step = self.epoch, dataformats='HWC')
 
+    def log_metrics(self, val=False):
+        log_directory = 'val' if val else 'train'
+        confusion_matrix = self.val_confusion_matrix if val else self.train_confusion_matrix 
+
+        self.log(f'{log_directory}/overall_accuracy', overall_accuracy(confusion_matrix, ignore_index_0=True))
+        self.log(f'{log_directory}/kappa_coefficent', kappa_coefficent(confusion_matrix, ignore_index_0=True))
+        self.log(f'{log_directory}/mean_users_accuracy', mean_users_accuracy(confusion_matrix, ignore_index_0=True))
+        self.log(f'{log_directory}/mean_producers_accuracy', mean_producers_accuracy(confusion_matrix, ignore_index_0=True))
+
+
     def on_validation_epoch_end(self):
+        self.log_metrics(val=True)
+
         self.epoch += 1
         if self.epoch % self.visualize_every_n_epochs == 1:
             self.visualize_progress()
+        
+        self.val_confusion_matrix = None
         return super().on_validation_epoch_end()
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         return optimizer
 
 if __name__ == '__main__':
-    model = Polsarnet()
+    model = Polsarnet(learning_rate=1e-5)
     trainer = pl.Trainer(gpus=1)
     trainer.fit(model)

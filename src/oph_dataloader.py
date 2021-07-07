@@ -22,7 +22,6 @@ def to_coherency(x):
     calculate the upper triangle elements of the coherency matrix
     https://en.wikipedia.org/wiki/Polarization_(waves)#Coherency_matrix
     '''
-
     x_conjugated = np.conj(x)
     channels, height, width = x.shape
 
@@ -63,7 +62,7 @@ def load_oph():
     return x, y
 
 
-def oph_to_categorical(y):
+def oph_to_categorical(y):      
     '''
     transforms the 6 rgb values to a one hot encoding 
     '''
@@ -174,8 +173,7 @@ class OPH_VisualizationDataset(Dataset):
         self.y = torch.from_numpy(y_patches)
         if real_transform  and imag_transform:
             self.x = real_transform(self.x.real) + imag_transform(self.x.imag) * 1j
-
-        
+      
     def __len__(self):
         return len(self.x)
 
