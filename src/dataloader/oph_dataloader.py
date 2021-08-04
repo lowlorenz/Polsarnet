@@ -9,47 +9,7 @@ import torch
 
 from functools import lru_cache
 
-
-def to_pauli(x):
-    pauli = np.zeros_like(x)
-    pauli[0] = x[0] - x[1]
-    pauli[1] = x[0] + x[1]
-    pauli[2] = 2*x[2]
-    return pauli
-
-def to_coherency(x):
-    ''' 
-    calculate the upper triangle elements of the coherency matrix
-    https://en.wikipedia.org/wiki/Polarization_(waves)#Coherency_matrix
-    '''
-    x_conjugated = np.conj(x)
-    channels, height, width = x.shape
-
-    if channels == 2:
-        coherency = np.zeros((3, height, width), dtype=np.complex)
-        coherency[0] = x[0] * x_conjugated[0]
-        coherency[1] = x[0] * x_conjugated[1]
-        coherency[2] = x[0] * x_conjugated[2]
-
-    if channels == 3:
-        coherency = np.zeros((6, height, width), dtype=np.complex)
-        coherency[0] = x[0] * x_conjugated[0]
-        coherency[1] = x[0] * x_conjugated[1]
-        coherency[2] = x[0] * x_conjugated[2]
-        coherency[3] = x[1] * x_conjugated[1]
-        coherency[4] = x[1] * x_conjugated[2]
-        coherency[5] = x[2] * x_conjugated[2]
-
-    return coherency
-
-def box_filter(x, filter_size=9):
-    filter = (filter_size, filter_size)
-
-    # average boxfilter
-    for i in range(len(x)):
-        x[i] = cv2.blur(x[i].real,filter) + cv2.blur(x[i].imag,filter) * 1j
-
-    return x
+from dataloader.data_helpers import to_coherency, to_pauli, box_filter
 
 @lru_cache
 def load_oph():
@@ -60,7 +20,6 @@ def load_oph():
     image = Image.open('./data/oph/label_inter.png')
     y = np.asarray(image)
     return x, y
-
 
 def oph_to_categorical(y):      
     '''
@@ -84,46 +43,48 @@ def oph_split_into_strips(x,y):
     y_splits = [ y[:,:,:278], y[:,:,278*1:278*2], y[:,:,278*2:278*3], y[:,:,278*3:278*4], y[:,:,278*4:278*5] ]
     return x_splits, y_splits
 
-def oph_extract_train_patches(x_splits, y_splits, validation_patch=0, num_samples=30000):
-    train_x_splits = [x for i,x in enumerate(x_splits) if i!=validation_patch]
-    train_y_splits = [y for i,y in enumerate(y_splits) if i!=validation_patch]
+def oph_extract_train_patches(x_splits, y_splits, validation_patch=0, test_patch=1, num_samples=30000):
+    train_x_splits = [x for i,x in enumerate(x_splits) if i!=validation_patch and i!=test_patch]
+    train_y_splits = [y for i,y in enumerate(y_splits) if i!=validation_patch and i!=test_patch]
     
     train_x_patches = np.zeros((6,13,13, num_samples),dtype=np.complex)
     train_y_patches = np.zeros((6,13,13, num_samples),dtype=np.float)
 
     indices = np.stack([rng.randint(0,6627,(num_samples)), rng.randint(0, 265, (num_samples))], axis=-1)
-    for i in range(num_samples//4): 
-        for j in range(4):
+    for i in range(num_samples//3): 
+        for j in range(3):
             indx0, indx1 = indices[i]
             train_x_patches[:,:,:,i] = train_x_splits[j][:,indx0:indx0+13, indx1:indx1+13]
             train_y_patches[:,:,:,i] = train_y_splits[j][:,indx0:indx0+13, indx1:indx1+13]
-            i += num_samples//4
+            i += num_samples//3
     return train_x_patches, train_y_patches
 
-def oph_extract_validation_patches(x_splits, y_splits, validation_patch=0):
+def oph_extract_validation_patches(x_splits, y_splits, validation_patch=0, num_samples=15000):
     val_x_split = x_splits[validation_patch]
     val_y_split = y_splits[validation_patch]
 
-    val_x_patches = np.zeros((6,13,13,3000),dtype=np.complex)
-    val_y_patches = np.zeros((6,13,13,3000),dtype=np.float)
+    val_x_patches = np.zeros((6,13,13,num_samples),dtype=np.complex)
+    val_y_patches = np.zeros((6,13,13,num_samples),dtype=np.float)
 
-    indices = np.stack([rng.randint(0,6627,(3000)), rng.randint(0, 265,(3000))], axis=-1)
-    for i in range(3000): 
+    indices = np.stack([rng.randint(0,6627,(num_samples)), rng.randint(0, 265,(num_samples))], axis=-1)
+    for i in range(num_samples): 
         indx0, indx1 = indices[i]
         val_x_patches[:,:,:,i] = val_x_split[:,indx0:indx0+13, indx1:indx1+13]
         val_y_patches[:,:,:,i] = val_y_split[:,indx0:indx0+13, indx1:indx1+13]
     
     return val_x_patches, val_y_patches
 
-def oph_extract_patches(x_splits, y_splits, validation_patch=0, val=False):
+def oph_extract_patches(x_splits, y_splits, validation_patch=0, test_patch=1, mode='val'):
     '''
     extracts random 13x13 patches from the splits.
     in the paper 12k training patches were used for training - therefore we extract 3k patches from 4 of the splits for training and 3k from the remaining validation patch
     '''
-    if val:
+    if mode == 'val':
         return oph_extract_validation_patches(x_splits, y_splits, validation_patch)
-    else:
-        return oph_extract_train_patches(x_splits, y_splits, validation_patch)
+    if mode == 'test':
+        return oph_extract_validation_patches(x_splits, y_splits, test_patch)
+    if mode == 'train':
+        return oph_extract_train_patches(x_splits, y_splits, validation_patch, test_patch)
 
 def generate_splits():
     x,y = load_oph()
@@ -149,8 +110,8 @@ class OPH_Dataset(Dataset):
 
     x_splits, y_splits = generate_splits()
 
-    def __init__(self, val=False, validation_index = 0, real_transform = None, imag_transform = None):
-        x_patches, y_patches = oph_extract_patches(self.x_splits, self.y_splits, validation_patch=validation_index, val=val)
+    def __init__(self, mode, validation_index = 0, test_index=1, real_transform = None, imag_transform = None):
+        x_patches, y_patches = oph_extract_patches(self.x_splits, self.y_splits, validation_patch=validation_index, test_patch=test_index, mode=mode)
         self.x = torch.from_numpy(x_patches).permute(3,0,1,2)
         self.y = torch.from_numpy(y_patches).permute(3,0,1,2)
         if real_transform  and imag_transform:
@@ -162,7 +123,7 @@ class OPH_Dataset(Dataset):
     def __getitem__(self, idx):
         return self.x[idx], self.y[idx]
 
-class OPH_VisualizationDataset(Dataset):
+class OPH_Visualization_Dataset(Dataset):
     
     def __init__(self, real_transform = None, imag_transform = None):
         x,y = load_oph()

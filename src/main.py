@@ -1,14 +1,22 @@
 
+import os
+from importlib.metadata import version
+
 import pytorch_lightning as pl
 import torch
+from pytorch_lightning.loggers import TensorBoardLogger
+from segmentation_models_pytorch.utils.losses import DiceLoss
 from torch import nn
-import complexNetwork as cn
-from oph_dataloader import OPH_Dataset, OPH_VisualizationDataset
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from segmentation_models_pytorch.utils.losses import DiceLoss
+from models.Polsarnet import PolsarnetModel, RealValuedPolsarnetModel
 
-from evaluation import confusion_matrix, kappa_coefficent, mean_producers_accuracy, mean_users_accuracy, overall_accuracy
+from models import complexNetwork as cn
+from evaluation import (confusion_matrix, kappa_coefficent,
+                        mean_producers_accuracy, mean_users_accuracy,
+                        overall_accuracy)
+from dataloader.oph_dataloader import OPH_Dataset, OPH_Visualization_Dataset
+
 
 def prepare_oph_normalization(self):
     ts = OPH_Dataset(validation_index=self.validation_index, val=False)
@@ -26,47 +34,39 @@ def prepare_oph_normalization(self):
 def transform_complex_to_real(x):
     return torch.hstack((x.real,x.imag))
 
-class AirsarModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.relu = cn.ComplexRelu()
-        self.K1_conv = cn.ComplexConv2d(6, 16, 3, dilation=1, stride=1, padding=1)
-        self.K2_conv = cn.ComplexConv2d(16, 32, 3, dilation=1, stride=1, padding=1)
-        self.K3_conv = cn.ComplexConv2d(32, 32, 3, dilation=1, stride=1, padding=1)
-        self.K4_conv = cn.ComplexConv2d(32, 32, 3, dilation=1, stride=1, padding=1)
-        self.DK2_conv = cn.ComplexConv2d(32, 32, 3, dilation=2, stride=1, padding=2)
-        self.DK3_conv = cn.ComplexConv2d(32, 32, 3, dilation=3, stride=1, padding=3)
-        self.Class_conv = cn.ComplexConv2d(32, 6, 1, dilation=1, stride=1, padding=0)
-        self.Class_softmax = cn.ComplexSoftmax()
-
-    def forward(self, x):        
-        x = self.relu(self.K1_conv(x.float()))
-        x = self.relu(self.K2_conv(x))
-        x = self.relu(self.K3_conv(x))
-        x = self.relu(self.K4_conv(x))
-        x = self.relu(self.DK2_conv(x))
-        x = self.relu(self.DK3_conv(x))
-        y = self.Class_softmax(self.Class_conv(x))
-        return y
-
+        
 class Polsarnet(pl.LightningModule):
-    def __init__(self, validation_index = 0, learning_rate = 1e-7, weight_decay = 5e-4):
+    def __init__(self, validation_index = 0, learning_rate = 1e-7, weight_decay = 5e-4, version=0, weights_path=None, model='complex'):
         super().__init__()
         self.save_hyperparameters()
         self.lr = learning_rate
         self.weight_decay = weight_decay
 
-        self.model = AirsarModel()
+        if weights_path:
+            self.model = torch.load(weights_path)
+        else:
+            if model == 'complex':
+                self.model = PolsarnetModel(in_channels=6, out_channels=6)
+            if model == 'real':
+                self.model = RealValuedPolsarnetModel(in_channels=6*2, out_channels=6)
         self.epoch = 0
-        
+        self.best_val_loss = 10000
+        self.version = version
+
         weights = [0,1,1,1,1,1]
         weighted_pixelwise_cross_entropy = cn.PixelwiseCrossEntropy(weights)
         pixelwise_cross_entropy = cn.PixelwiseCrossEntropy()
         dice = DiceLoss()
 
-        self.train_confusion_matrix = None
-        self.val_confusion_matrix = None
+        self.confusion_matrix ={
+            'train': torch.zeros((6,6)),
+            'val':   torch.zeros((6,6)),
+            'test':  torch.zeros((6,6))
+        }
 
+        self.losses = {
+            'val': [],
+        }
 
         self.validation_index = validation_index
         self.z_normalize = True
@@ -75,6 +75,14 @@ class Polsarnet(pl.LightningModule):
     
     def forward(self, x):        
         return self.model(x)
+
+    def save_weights(self):
+        self.model.save_weights( f'models/oph/version{self.version}')
+
+    def load_best_version(self):
+        self.model = torch.load( f'models/oph/version{self.version}')
+
+    ## Data preperation
 
     def setup(self, stage):
         # setup z normalization for the datasets
@@ -94,17 +102,23 @@ class Polsarnet(pl.LightningModule):
 
         self.train_dataset = OPH_Dataset(
             validation_index=self.validation_index,
-            val=False,
+            mode='train',
             real_transform=transform_r,
             imag_transform=transform_i)
 
         self.val_dataset = OPH_Dataset(
             validation_index=self.validation_index,
-            val=True,
+            mode='val',
             real_transform=transform_r,
             imag_transform=transform_i)
 
-        visualization_dataset = OPH_VisualizationDataset(
+        self.test_dataset = OPH_Dataset(
+            validation_index=self.validation_index,
+            mode='test',
+            real_transform=transform_r,
+            imag_transform=transform_i)
+
+        visualization_dataset = OPH_Visualization_Dataset(
             real_transform=transform_r,
             imag_transform=transform_i)
 
@@ -115,34 +129,84 @@ class Polsarnet(pl.LightningModule):
         
     def val_dataloader(self):        
         return DataLoader(self.val_dataset, batch_size=64, shuffle=False)
-        
-    def training_step(self, batch, batch_idx):
+
+    def test_dataloader(self):        
+        return DataLoader(self.test_dataset, batch_size=64, shuffle=False)
+    
+    ## Training logic
+
+    def step(self, batch):
         data, label = batch
         data = transform_complex_to_real(data)
 
         data, label = data.double(), label.double()
         prediction = self(data)
         loss = self.loss_function(prediction, label)
-
+        return data, label, prediction, loss
+    
+    def training_step(self, batch, batch_idx):
+        data, label, prediction, loss = self.step(batch)
+        self.save_confusion_matrix(prediction, label, 'train')
         self.log('train/loss', loss)
         return loss
+    
+    def on_train_epoch_end(self):
+        self.log_metrics('train')
+        self.confusion_matrix['train'] *= 0
+        return super().on_train_epoch_end()
 
     def validation_step(self, batch, batch_idx):
-        data, label = batch
-        data = transform_complex_to_real(data)
-
-        prediction = self(data)
-        loss = self.loss_function(prediction, label)
-
-        if self.val_confusion_matrix == None:
-            self.val_confusion_matrix = confusion_matrix(prediction, label)
-        else:
-            self.val_confusion_matrix = self.val_confusion_matrix + confusion_matrix(prediction, label)
-    
+        data, label, prediction, loss = self.step(batch)
+        self.save_confusion_matrix(prediction, label, 'val')    
+        self.losses['val'].append(loss)
         self.log('val/loss', loss)
         return loss
+    
+    def on_validation_epoch_end(self):
+        self.log_metrics('val')
+        self.confusion_matrix['val'] *= 0
 
-    def predict_oph(self):
+        avg_loss = sum(self.losses['val']) / len(self.losses['val'])
+        if avg_loss < self.best_val_loss:
+            self.best_val_loss = avg_loss
+            self.save_weights()
+        self.losses['val'] = []
+
+        self.epoch += 1
+        if self.epoch % self.visualize_every_n_epochs == 1:
+            self.visualize_progress()
+        
+        return super().on_validation_epoch_end()
+    
+    def test_step(self, batch, batch_idx):
+        data, label, prediction, loss = self.step(batch)
+        self.save_confusion_matrix(prediction, label, 'test')    
+        self.log('test/loss', loss)
+        return loss
+
+    def on_test_epoch_end(self):
+        self.log_metrics('test')
+        self.confusion_matrix['test'] *= 0
+        
+        return super().on_test_epoch_end()
+
+    ## Evaluation methods
+
+    def log_metrics(self, mode):
+        self.log(f'{mode}/overall_accuracy', overall_accuracy(self.confusion_matrix[mode], ignore_index_0=True))
+        self.log(f'{mode}/kappa_coefficent', kappa_coefficent(self.confusion_matrix[mode], ignore_index_0=True))
+        self.log(f'{mode}/mean_users_accuracy', mean_users_accuracy(self.confusion_matrix[mode], ignore_index_0=True))
+        self.log(f'{mode}/mean_producers_accuracy', mean_producers_accuracy(self.confusion_matrix[mode], ignore_index_0=True))
+
+    def save_confusion_matrix(self, prediction, label, mode):
+        self.confusion_matrix[mode] = self.confusion_matrix[mode] + confusion_matrix(prediction, label)
+    
+    def visualize_progress(self):
+        image = self.infere_oph()
+        tensorboard = self.logger.experiment
+        tensorboard.add_image("Prediction", image, global_step = self.epoch, dataformats='HWC')
+
+    def infere_oph(self):
         with torch.no_grad():
             # make predictions
             predictions = []
@@ -167,36 +231,18 @@ class Polsarnet(pl.LightningModule):
 
         return image
 
-    def visualize_progress(self):
-        image = self.predict_oph()
-        tensorboard = self.logger.experiment
-        tensorboard.add_image("Prediction", image, global_step = self.epoch, dataformats='HWC')
-
-    def log_metrics(self, val=False):
-        log_directory = 'val' if val else 'train'
-        confusion_matrix = self.val_confusion_matrix if val else self.train_confusion_matrix 
-
-        self.log(f'{log_directory}/overall_accuracy', overall_accuracy(confusion_matrix, ignore_index_0=True))
-        self.log(f'{log_directory}/kappa_coefficent', kappa_coefficent(confusion_matrix, ignore_index_0=True))
-        self.log(f'{log_directory}/mean_users_accuracy', mean_users_accuracy(confusion_matrix, ignore_index_0=True))
-        self.log(f'{log_directory}/mean_producers_accuracy', mean_producers_accuracy(confusion_matrix, ignore_index_0=True))
-
-
-    def on_validation_epoch_end(self):
-        self.log_metrics(val=True)
-
-        self.epoch += 1
-        if self.epoch % self.visualize_every_n_epochs == 1:
-            self.visualize_progress()
-        
-        self.val_confusion_matrix = None
-        return super().on_validation_epoch_end()
+    ## Optimizer
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         return optimizer
 
 if __name__ == '__main__':
-    model = Polsarnet(learning_rate=1e-5)
-    trainer = pl.Trainer(gpus=1)
-    trainer.fit(model)
+    for val_index in [0,2,3,4]:
+        version = len(os.listdir('logs/oph'))
+        logger = TensorBoardLogger(f'logs/', name='oph')
+        model = Polsarnet(learning_rate=1e-5, validation_index=val_index, version=version)
+        trainer = pl.Trainer(gpus=1, max_epochs=1000, logger=logger)
+        trainer.fit(model)
+        model.load_best_version()
+        trainer.test()
