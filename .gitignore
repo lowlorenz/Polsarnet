@@ -6,4 +6,5 @@ meeting.md
 data
 logs
 models
+!src/models
 *npy
