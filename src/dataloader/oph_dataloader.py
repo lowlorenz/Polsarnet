@@ -1,13 +1,10 @@
 import numpy as np
 import numpy.random as rng
 
-import cv2
 
 from PIL import Image
 from torch.utils.data import Dataset
 import torch
-
-from functools import lru_cache
 
 from dataloader.data_helpers import to_coherency, to_pauli, box_filter
 

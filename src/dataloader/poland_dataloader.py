@@ -1,11 +1,7 @@
-from functools import lru_cache
-
-import matplotlib.pyplot as plt
 import numpy as np
 import numpy.random as rng
 import torch
 from PIL import Image
-from torch.utils import data
 from torch.utils.data import Dataset
 
 from dataloader.data_helpers import box_filter, to_coherency

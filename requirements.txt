@@ -1,0 +1,9 @@
+torch
+torchvision
+pytorch_lightning
+segmentation_models_pytorch
+
+opencv-python
+numpy
+cv2
+matplotlib

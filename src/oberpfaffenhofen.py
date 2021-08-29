@@ -1,6 +1,5 @@
 
 import os
-from importlib.metadata import version
 
 import pytorch_lightning as pl
 import torch
@@ -238,6 +237,7 @@ class Polsarnet(pl.LightningModule):
         return optimizer
 
 if __name__ == '__main__':
+    # train Polsarnet
     for val_index in [0,2,3,4]:
         version = len(os.listdir('logs/oph'))
         logger = TensorBoardLogger(f'logs/', name='oph')
@@ -247,6 +247,7 @@ if __name__ == '__main__':
         model.load_best_version()
         trainer.test()
 
+    # train FCN_r6 - the realvalued counterpart
     for val_index in [0,2,3,4]:
         version = len(os.listdir('logs/oph'))
         logger = TensorBoardLogger(f'logs/', name='oph')

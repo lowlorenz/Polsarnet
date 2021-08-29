@@ -1,5 +1,4 @@
 import os
-from numpy.lib.npyio import load
 
 import pytorch_lightning as pl
 import torch
