@@ -229,7 +229,7 @@ if __name__ == '__main__':
     version = len(os.listdir('logs/oph'))
     logger = TensorBoardLogger(f'logs/', name='poland')
     model = Polsarnet(learning_rate=1e-5, version=version)
-    trainer = pl.Trainer(gpus=1, max_epochs=10000, logger=logger)
+    trainer = pl.Trainer(gpus=1, max_epochs=5000, logger=logger)
     trainer.fit(model)
     model.load_best_version()
     trainer.test()

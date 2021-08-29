@@ -11,7 +11,7 @@ from functools import lru_cache
 
 from dataloader.data_helpers import to_coherency, to_pauli, box_filter
 
-@lru_cache
+#@lru_cache
 def load_oph():
     data  = np.load('./data/oph/oph_data.npy')
     x = data[:,:,:,0] + data[:,:,:,1] * 1j

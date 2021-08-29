@@ -23,6 +23,8 @@ def to_coherency(x):
         coherency[0] = x[0] * x_conjugated[0]
         coherency[1] = x[0] * x_conjugated[1]
         coherency[2] = x[1] * x_conjugated[1]
+        del x_conjugated
+        del x
         return coherency
 
     if channels == 3:
@@ -33,6 +35,8 @@ def to_coherency(x):
         coherency[3] = x[1] * x_conjugated[1]
         coherency[4] = x[1] * x_conjugated[2]
         coherency[5] = x[2] * x_conjugated[2]
+        del x_conjugated
+        del x
         return coherency
 
 

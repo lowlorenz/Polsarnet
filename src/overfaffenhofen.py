@@ -242,7 +242,16 @@ if __name__ == '__main__':
         version = len(os.listdir('logs/oph'))
         logger = TensorBoardLogger(f'logs/', name='oph')
         model = Polsarnet(learning_rate=1e-5, validation_index=val_index, version=version)
-        trainer = pl.Trainer(gpus=1, max_epochs=1000, logger=logger)
+        trainer = pl.Trainer(gpus=1, max_epochs=2000, logger=logger)
+        trainer.fit(model)
+        model.load_best_version()
+        trainer.test()
+
+    for val_index in [0,2,3,4]:
+        version = len(os.listdir('logs/oph'))
+        logger = TensorBoardLogger(f'logs/', name='oph')
+        model = Polsarnet(learning_rate=1e-5, validation_index=val_index, version=version, model='real')
+        trainer = pl.Trainer(gpus=1, max_epochs=2000, logger=logger)
         trainer.fit(model)
         model.load_best_version()
         trainer.test()

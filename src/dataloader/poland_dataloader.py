@@ -8,10 +8,10 @@ from PIL import Image
 from torch.utils import data
 from torch.utils.data import Dataset
 
-from dataloader.data_helpers import box_filter, to_coherency, to_pauli
+from dataloader.data_helpers import box_filter, to_coherency
 
 
-@lru_cache
+#@lru_cache
 def load_poland_eval_files():
     data = np.load('./data/Poland/val&test/sentinel1.npy')
 
@@ -29,7 +29,7 @@ def load_poland_eval_files():
     return data, labels
 
 
-@lru_cache
+#@lru_cache
 def load_poland_train_files():
     data = np.load('./data/Poland/train/sentinel1.npy')
 
@@ -64,25 +64,63 @@ def sample_patches(x, y):
 
     return np.stack(patches_x), np.stack(patches_y)
 
+def sample_random_patches(x, y, num_samples, size=13):
+    _, ax1, ax2 = x.shape
+    indx = np.stack([rng.randint(0,ax1-size,(num_samples)), rng.randint(0, ax2-size,(num_samples))], axis=-1)
+    
+    patches_x = np.array([x[:,i[0]:i[0]+size, i[1]:i[1]+size] for i in indx])
+    patches_y = np.array([y[i[0]:i[0]+size, i[1]:i[1]+size] for i in indx])
+    
+    
+    return patches_x, patches_y
 
 class Poland_Dataset(Dataset):
 
     def __init__(self, mode, real_transform = None, imag_transform = None):
         
         if mode == 'train':
-            self.x = np.load('data/Poland/train/small_train_patches_x.npy')
-            self.y = np.load('data/Poland/train/small_train_patches_y.npy')
+            # self.x = np.load('data/Poland/train/small_train_patches_x.npy')
+            # self.y = np.load('data/Poland/train/small_train_patches_y.npy')
+            data_x, data_y = load_poland_train_files()
+
+            data_x = np.stack([data_x[0] + data_x[1] * 1j,
+                                data_x[2] + data_x[3] * 1j])
+            data_x = to_coherency(data_x)
+            data_x = box_filter(data_x)
+            self.x, self.y = sample_random_patches(data_x, data_y, num_samples=150000, size=13)
         if mode == 'val':
-            self.x = np.load('data/Poland/val&test/small_val_patches_x.npy')
-            self.y = np.load('data/Poland/val&test/small_val_patches_y.npy')
+            # self.x = np.load('data/Poland/val&test/small_val_patches_x.npy')
+            # self.y = np.load('data/Poland/val&test/small_val_patches_y.npy')
+
+            data_x, data_y =  load_poland_eval_files()
+
+            data_x = data_x[:,:,:7060]
+            data_y = data_y[:,:7060]
+
+            data_x = np.stack([data_x[0] + data_x[1] * 1j,
+                                data_x[2] + data_x[3] * 1j])
+            data_x = to_coherency(data_x)
+            data_x = box_filter(data_x)
+            self.x, self.y = sample_random_patches(data_x, data_y, num_samples=20000, size=13)
+
         if mode == 'test':
-            self.x = np.load('data/Poland/val&test/small_test_patches_x.npy')
-            self.y = np.load('data/Poland/val&test/small_test_patches_y.npy')
+            # self.x = np.load('data/Poland/val&test/small_test_patches_x.npy')
+            # self.y = np.load('data/Poland/val&test/small_test_patches_y.npy')
+
+            data_x, data_y =  load_poland_eval_files()
+
+            data_x = data_x[:,:,7060:]
+            data_y = data_y[:,7060:]
+
+            data_x = np.stack([data_x[0] + data_x[1] * 1j,
+                                data_x[2] + data_x[3] * 1j])
+            data_x = to_coherency(data_x)
+            data_x = box_filter(data_x)
+            self.x, self.y = sample_random_patches(data_x, data_y, num_samples=20000, size=13)
 
         self.x = torch.from_numpy(self.x)
         self.y = torch.from_numpy(self.y)
         self.y[self.y == -1] = 5
-        a = self.x.real
         
         if real_transform and imag_transform:
             r = real_transform(self.x.real)
@@ -93,43 +131,19 @@ class Poland_Dataset(Dataset):
         return len(self.x)
 
     def __getitem__(self, idx):
-        return self.x[idx], self.y[idx]
+       return self.x[idx], self.y[idx]
 
-class Poland_Visualization_Dataset(Dataset):
-
-    def __init__(self, real_transform = None, imag_transform = None):
-        data_x, eval_y = load_poland_eval_files()
-    
-        data_x = np.stack([data_x[0] + data_x[1] * 1j,
-                           data_x[2] + data_x[3] * 1j])
-
-        print(data_x.shape)
-
-        eval_x = box_filter(to_coherency(data_x))
-
-
-        val_x = eval_x[:,:,:7090]
-        val_y = eval_y[:,:7090]
-        val_patches_x, val_patches_y = sample_patches(val_x, val_y)
-
-        self.x = torch.from_numpy(self.x)
-        self.y = torch.from_numpy(self.y)
-        self.y[self.y == -1] = 5
-        a = self.x.real
-        
-        if real_transform and imag_transform:
-            r = real_transform(self.x.real)
-            i = imag_transform(self.x.imag) * 1j
-            self.x = r + i
-    
-    def __len__(self):
-        return len(self.x)
-
-    def __getitem__(self, idx):
-        return self.x[idx], self.y[idx]
 
 if __name__ == '__main__':
-    a = Poland_Dataset('test')
+    pass
+    # train_x, train_y = load_poland_train_files()
+    # train_x = np.stack([train_x[0] + train_x[1] * 1j,
+    #                    train_x[2] + train_x[3] * 1j])
+    # train_x = to_coherency(train_x)
+    # train_x = box_filter(train_x)
+    # train_patches_x, train_patches_y = sample_random_patches(train_x, train_y, num_samples=3000, size=256)
+
+    #a = Poland_Dataset('test')
     # How to extract the patches: 
 
     # data_x, train_y = load_poland_train_files()

@@ -3,8 +3,9 @@
 lightning_logs
 *test.ipynb
 meeting.md
-data
-logs
+data/*
+!data
+logs/*
 models
 !src/models
 *npy
